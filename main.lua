@@ -37,6 +37,7 @@ local Size = require("ui/size")
 local Geom = require("ui/geometry")
 local _ = require("gettext")
 local BD = require("ui/bidi")
+local util = require("util")
 local DEFAULT_CONTENT_FONT_SIZE = 20
 local DEFAULT_TITLE_FONT_SIZE = 26
 local DEFAULT_INFO_FONT_SIZE = 17
@@ -352,24 +353,31 @@ end
 
 local function wrapText(text, face, max_width)
     local lines = {}
-    local words = {}
-    for word in text:gmatch("%S+") do table.insert(words, word) end
     local current_line = ""
+    local words = util.splitToWords(text)  
+    
     for _, word in ipairs(words) do
-        local test_line = current_line == "" and word or (current_line .. " " .. word)
+        local test_line = current_line == "" and word or (current_line .. word)
         local tw = TextWidget:new{ text = test_line, face = face }
         local w = tw:getSize().w
         tw:free()
+        
         if w <= max_width then
             current_line = test_line
         else
-            if current_line ~= "" then table.insert(lines, current_line) end
+            if current_line ~= "" then
+                table.insert(lines, current_line)
+            end
             current_line = word
         end
     end
-    if current_line ~= "" then table.insert(lines, current_line) end
+    
+    if current_line ~= "" then
+        table.insert(lines, current_line)
+    end
     return lines
 end
+
 local function createJustifiedLine(text, face, target_width, fgcolor)
     local words = {}
     for word in text:gmatch("%S+") do table.insert(words, word) end
