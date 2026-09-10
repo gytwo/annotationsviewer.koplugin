@@ -1542,6 +1542,7 @@ end
         tap_width = self.sb_x
     end
     self.ges_events.Tap = { GestureRange:new{ ges = "tap", range = Geom:new{ x = 0, y = self.title_height, w = tap_width, h = tap_height } } }
+    self.ges_events.DoubleTap = { GestureRange:new{ ges = "double_tap", range = Geom:new{ x = 0, y = self.title_height, w = tap_width, h = tap_height } } }
     -- Narrow swipe range so the scrollbar column isn't claimed by page-turn swipes
     local swipe_range = Geom:new{ x = 0, y = 0, w = tap_width, h = self.height }
     local swipe_setting = getSwipeSetting()
@@ -2731,6 +2732,104 @@ function NotesListWidget:onTap(_, ges)
 
     return false
 end
+
+function NotesListWidget:onDoubleTap(_, ges)
+    if not ges or not ges.pos then return end
+    local pag_style = getPaginationStyle()
+    if (pag_style == "scrollbar" or pag_style == "scrollbar_chevrons") and self.sb_x and ges.pos.x >= self.sb_x then
+        return
+    end
+    local tap_y = ges.pos.y
+    if tap_y < self.title_height then
+        return
+    end
+
+    local _sb_track_center = (self.sb_x or 0) + math.floor((SB_THUMB_WIDTH - SB_TRACK_WIDTH) / 2) + math.floor(SB_TRACK_WIDTH / 2)
+    local _sb_reserve = (pag_style == "scrollbar" or pag_style == "scrollbar_chevrons") and (self.width - _sb_track_center) or 0
+    local note_width = self.width - _sb_reserve
+
+    local subtitle_height = 0
+    if self.active_filter then
+        local has_filter = (
+            (self.active_filter.value and (self.active_filter.type == "color" or self.active_filter.type == "style")) or
+            (self.active_filter.value_exclude and (self.active_filter.type_exclude == "color" or self.active_filter.type_exclude == "style")) or
+            (self.active_filter.books and next(self.active_filter.books)) or
+            (self.active_filter.books_exclude and next(self.active_filter.books_exclude)) or
+            (self.active_filter.tags and next(self.active_filter.tags)) or
+            (self.active_filter.tags_exclude and next(self.active_filter.tags_exclude)) or
+            (self.active_filter.search_highlight and self.active_filter.search_highlight ~= "") or
+            (self.active_filter.search_highlight_exclude and self.active_filter.search_highlight_exclude ~= "") or
+            (self.active_filter.search_note and self.active_filter.search_note ~= "") or
+            (self.active_filter.search_note_exclude and self.active_filter.search_note_exclude ~= "") or
+            (self.active_filter.chapters and next(self.active_filter.chapters)) or
+            (self.active_filter.chapters_exclude and next(self.active_filter.chapters_exclude))
+        )
+        if has_filter then
+            local TextWidget = require("ui/widget/textwidget")
+            local Font = require("ui/font")
+            local sw = TextWidget:new{ text = "[filter]", face = Font:getFace("cfont", 14) }
+            subtitle_height = sw:getSize().h
+            sw:free()
+        end
+    end
+
+    local dedup_fields = getDedupInfoFields()
+    local do_hide_dup_title = getHideDupTitle()
+    local do_hide_dup_info = getHideDupInfo()
+    local always_show_first = getAlwaysShowFirstOnPage()
+    local dedup_prev_title = nil
+    local dedup_prev_info_key = nil
+    if do_hide_dup_title or do_hide_dup_info then
+        for p = 1, self.current_page - 1 do
+            local prev_page = self.pages[p] or {}
+            if #prev_page > 0 then
+                local last_idx = prev_page[#prev_page]
+                local prev_note = self.filtered_notes[last_idx]
+                if prev_note then
+                    dedup_prev_title = prev_note.book_title
+                    dedup_prev_info_key = getNoteInfoKey(prev_note, dedup_fields)
+                end
+            end
+        end
+    end
+
+    local current_y = self.title_height + subtitle_height + getTopPadding()
+    local page_indices = self.pages[self.current_page] or {}
+    local note_spacing = getNoteSpacing()
+
+    for i, idx in ipairs(page_indices) do
+        local note = self.filtered_notes[idx]
+        if note then
+            local is_first_on_page = (i == 1)
+            local skip_title = do_hide_dup_title
+                and not (always_show_first and is_first_on_page)
+                and (note.book_title == dedup_prev_title)
+            local skip_info = do_hide_dup_info
+                and not (always_show_first and is_first_on_page)
+                and (getNoteInfoKey(note, dedup_fields) == dedup_prev_info_key)
+            local temp_widget = NoteItemWidget:new{ width = note_width, note = note, show_parent = self, skip_title = skip_title, skip_info = skip_info }
+            local note_height = temp_widget.dimen.h
+            temp_widget:free()
+
+            local note_y_end = current_y + note_height
+
+            if tap_y >= current_y and tap_y < note_y_end then
+                UIManager:close(self)
+                if self.viewer and self.viewer.openBookAtNote then
+                    self.viewer:openBookAtNote(note)
+                end
+                return true
+            end
+
+            dedup_prev_title = note.book_title
+            dedup_prev_info_key = getNoteInfoKey(note, dedup_fields)
+            current_y = note_y_end + note_spacing
+        end
+    end
+
+    return false
+end
+
 function NotesListWidget:onNoteSelected(note)
     if self.viewer and self.viewer.showNoteDetails then
         self.viewer:showNoteDetails(note, self)
