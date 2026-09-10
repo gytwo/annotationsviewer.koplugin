@@ -45,6 +45,7 @@ local DEFAULT_H_MARGIN = 50
 local DEFAULT_NOTE_SPACING = 30
 local DEFAULT_TEXT_MARGIN = 10
 local DEFAULT_TRUNCATE_LINES = 5
+local DEFAULT_TRUNCATE_NOTE_LINES = 5
 local DEFAULT_TITLE_MARGIN = 2
 local DEFAULT_INFO_MARGIN = 6
 local DEFAULT_TOP_PADDING = 40
@@ -89,6 +90,11 @@ local preview_truncate_lines = nil
 local function getTruncateLines()
     if preview_truncate_lines then return preview_truncate_lines end
     return getSetting("truncate_lines", DEFAULT_TRUNCATE_LINES)
+end
+local function getTruncateNoteLines()
+    local v = tonumber(getSetting("truncate_note_lines", DEFAULT_TRUNCATE_NOTE_LINES))
+    if not v or v < 1 then return DEFAULT_TRUNCATE_NOTE_LINES end
+    return v
 end
 local function getJustify() return getSetting("justify", false) end
 local function getTitleMargin() return Screen:scaleBySize(getSetting("title_margin", DEFAULT_TITLE_MARGIN)) end
@@ -354,7 +360,7 @@ end
 local function wrapText(text, face, max_width)
     local lines = {}
     local current_line = ""
-    local words = util.splitToWords(text)  
+    local words = util.splitToWords(text)  -- 使用 util 的函数
     
     for _, word in ipairs(words) do
         local test_line = current_line == "" and word or (current_line .. word)
@@ -377,7 +383,6 @@ local function wrapText(text, face, max_width)
     end
     return lines
 end
-
 local function createJustifiedLine(text, face, target_width, fgcolor)
     local words = {}
     for word in text:gmatch("%S+") do table.insert(words, word) end
@@ -607,7 +612,7 @@ function NoteItemWidget:init()
         })
     end
 
-    if note_wrapper:hasUserNote() then
+        if note_wrapper:hasUserNote() then
         table.insert(note_content, VerticalSpan:new{ width = Screen:scaleBySize(8) })
 
         local note_icon_char = "\u{F040}"
@@ -620,16 +625,73 @@ function NoteItemWidget:init()
         local icon_size = note_icon:getSize().w
 
         local note_text_width = line_width - icon_size - icon_margin
-        local note_lines = wrapText(self.note.user_note, content_face, note_text_width)
+        local full_note_lines = wrapText(self.note.user_note, content_face, note_text_width)
+        local max_note_lines = getTruncateNoteLines()
+        local note_truncated = false
+        local note_lines = full_note_lines
+        local last_note_line_no_ell
+        local note_ell = "..."
+        if #full_note_lines > max_note_lines then
+            note_truncated = true
+            note_lines = {}
+            for i = 1, max_note_lines do note_lines[i] = full_note_lines[i] end
+            -- 从末行尾部逐步裁字，保证加上省略号后不超宽
+            local last = note_lines[#note_lines] or ""
+            local tw = TextWidget:new{ text = last .. note_ell, face = content_face }
+            while tw:getSize().w > note_text_width and #last > 0 do
+                tw:free()
+                last = last:sub(1, -2)
+                tw = TextWidget:new{ text = last .. note_ell, face = content_face }
+            end
+            tw:free()
+            last_note_line_no_ell = last
+        end
+
         local note_text_group = VerticalGroup:new{ align = "left" }
-        for _, line in ipairs(note_lines) do
-            local line_widget = TextWidget:new{
-                text = line, face = content_face, fgcolor = BlitBuffer.COLOR_BLACK,
-            }
+        for i, line in ipairs(note_lines) do
+            local line_widget
+            local is_last = (i == #note_lines)
+            if is_last and note_truncated then
+                if justify == true then
+                    -- 末行 = 去掉尾部字符的内容（两端对齐） + "..."
+                    local ell_meas = TextWidget:new{ text = note_ell, face = content_face }
+                    local ell_w = ell_meas:getSize().w
+                    ell_meas:free()
+                    if last_note_line_no_ell and #last_note_line_no_ell > 0 then
+                        local justified_part = createJustifiedLine(
+                            last_note_line_no_ell, content_face,
+                            math.max(0, note_text_width - ell_w),
+                            BlitBuffer.COLOR_BLACK
+                        )
+                        local ell_widget = TextWidget:new{
+                            text = note_ell, face = content_face, fgcolor = BlitBuffer.COLOR_BLACK,
+                        }
+                        line_widget = HorizontalGroup:new{ justified_part, ell_widget }
+                    else
+                        line_widget = TextWidget:new{
+                            text = note_ell, face = content_face, fgcolor = BlitBuffer.COLOR_BLACK,
+                        }
+                    end
+                else
+                    line_widget = TextWidget:new{
+                        text = (last_note_line_no_ell or line) .. note_ell,
+                        face = content_face, fgcolor = BlitBuffer.COLOR_BLACK,
+                    }
+                end
+            else
+                if justify == true and i < #note_lines and #note_lines > 1 then
+                    line_widget = createJustifiedLine(
+                        line, content_face, note_text_width, BlitBuffer.COLOR_BLACK
+                    )
+                else
+                    line_widget = TextWidget:new{
+                        text = line, face = content_face, fgcolor = BlitBuffer.COLOR_BLACK,
+                    }
+                end
+            end
             table.insert(note_text_group, line_widget)
         end
 
-                
         local note_row = HorizontalGroup:new{
             note_icon,
             HorizontalSpan:new{ width = icon_margin },
@@ -706,7 +768,6 @@ function NotesListWidget:init()
     self:applyFilter()
     self:calculatePages()
     if Device:hasKeys() then
-        logger.info("[AnnotationsViewer]Available Input.group keys:", Input.group)
         self.key_events.GotoPrevPage = { { Input.group.PgBack } }
         self.key_events.GotoNextPage = { { Input.group.PgFwd } }
         self.key_events.Close = { { Input.group.Back } }  
@@ -1667,6 +1728,11 @@ function NotesListWidget:showSettingsMenu()
             { text = _("Max Lines Per Highlight: ") .. getTruncateLines(), callback = sub(function()
                 self:showSpinSetting(_("Max Lines per Highlight"), "truncate_lines", DEFAULT_TRUNCATE_LINES, 1, 20, 1, function() self:showSettingsMenu() end)
             end) },
+            { text = _("Max Lines Per Note: ") .. getTruncateNoteLines(), callback = sub(function()
+                self:showSpinSetting(_("Max Lines per Note"), "truncate_note_lines", DEFAULT_TRUNCATE_NOTE_LINES, 1, 20, 1, function() self:showSettingsMenu() end)
+            end) },
+        },
+        {
             { text = _("Justify Text: ") .. onoff(getJustify()), callback = makeToggleSetting("justify", getJustify) },
         },
         -- Section: Content
